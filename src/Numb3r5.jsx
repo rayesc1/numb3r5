@@ -1,10 +1,8 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 
 // ── Main puzzle (2 ops, 3 pairs) ──
 const PUZZLE = {
   number: 2,
-  difficulty: "Hard",
-  date: "3/7/2026",
   pairs: [
     { input: 2, output: 5 },
     { input: 5, output: 17 },
@@ -22,31 +20,59 @@ const LUCKY_PUZZLE = {
     { input: 8, output: 21 },
   ],
   solution: { op1: "+", num1: 3, op2: "×", num2: 2, op3: "−", num3: 1 },
+  // Slot indices: 0=OP1, 1=NUM1, 2=OP2, 3=NUM2, 4=OP3, 5=NUM3
+  // hints[i] = slot revealed when luckyRevealed reaches i+2 (i.e. after clue i+2 is shown)
+  hints: [0, 3, 4], // Clue 2 → OP1, Clue 3 → NUM2, Clue 4 → OP3
 };
 
 const PAIR_SCORES = { 1: 500, 2: 300, 3: 100 };
 const LUCKY_SCORES = { 1: 1000, 2: 800, 3: 500, 4: 300 };
 const OPERATORS = ["+", "−", "×", "÷"];
 
+// Builds a slot array with hints pre-filled up to the current clue level
+function buildHintSlots(revealedCount) {
+  const sol = LUCKY_PUZZLE.solution;
+  const solArr = [sol.op1, sol.num1, sol.op2, sol.num2, sol.op3, sol.num3];
+  const slots = [null, null, null, null, null, null];
+  // hints[i] is revealed when revealedCount >= i+2
+  LUCKY_PUZZLE.hints.forEach((slotIdx, i) => {
+    if (revealedCount >= i + 2) slots[slotIdx] = solArr[slotIdx];
+  });
+  return slots;
+}
+
+// Returns the first non-hint, non-filled slot index for auto-focus
+function firstOpenSlot(slots) {
+  for (let i = 0; i < slots.length; i++) {
+    if (slots[i] === null) return i;
+  }
+  return null;
+}
+
 // ── Formula engines ──
+// Applies a 2-operation formula left-to-right (no PEMDAS)
 function applyFormula2(input, op1, num1, op2, num2) {
   let mid;
   if (op1 === "+") mid = input + num1;
   else if (op1 === "−") mid = input - num1;
   else if (op1 === "×") mid = input * num1;
   else if (op1 === "÷") mid = input / num1;
+  else return 0; // defensive: unknown operator
   if (op2 === "+") return mid + num2;
   if (op2 === "−") return mid - num2;
   if (op2 === "×") return mid * num2;
   if (op2 === "÷") return mid / num2;
+  return 0; // defensive: unknown operator
 }
 
+// Applies a 3-operation formula by chaining applyFormula2 with a third op
 function applyFormula3(input, op1, num1, op2, num2, op3, num3) {
-  let v = applyFormula2(input, op1, num1, op2, num2);
+  const v = applyFormula2(input, op1, num1, op2, num2);
   if (op3 === "+") return v + num3;
   if (op3 === "−") return v - num3;
   if (op3 === "×") return v * num3;
   if (op3 === "÷") return v / num3;
+  return 0; // defensive: unknown operator
 }
 
 function checkMainSatisfies(op1, num1, op2, num2) {
@@ -176,7 +202,7 @@ function InputPanel({
               </button>
             ))}
           </div>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, marginTop: 10 }}>
+          <div className="negative-toggle-wrap" style={{ display: "none", alignItems: "center", justifyContent: "center", gap: 10, marginTop: 10 }}>
             <span style={{ fontSize: 12, color: numActive ? "#bbb" : "#555", transition: "color 0.2s" }}>
               Negative
             </span>
@@ -334,7 +360,7 @@ function PuzzleZone({ visiblePairs, currentSlots, currentActive, wrongFlash, pai
   );
 }
 
-const STORAGE_KEY = `numb3r5_v5_puzzle${PUZZLE.number}`;
+const STORAGE_KEY = `numb3r5_v18_puzzle${PUZZLE.number}`;
 const _saved = (() => {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -344,6 +370,9 @@ const _saved = (() => {
 function savedOr(key, fallback) {
   return _saved && _saved[key] !== undefined ? _saved[key] : fallback;
 }
+
+// Computed once at load time — stable for the lifetime of the page
+const localDate = new Date().toLocaleDateString("en-US", { month: "numeric", day: "numeric", year: "numeric" });
 
 // ── Main component ──
 export default function Numb3r5() {
@@ -361,7 +390,7 @@ export default function Numb3r5() {
 
   // Extra Challenge state
   const [luckyOpen, setLuckyOpen] = useState(() => savedOr("luckyOpen", false));
-  const [luckySlots, setLuckySlots] = useState(() => savedOr("luckySlots", [null, null, null, null, null, null]));
+  const [luckySlots, setLuckySlots] = useState(() => savedOr("luckySlots", buildHintSlots(savedOr("luckyRevealed", 1))));
   const [luckyActive, setLuckyActive] = useState(() => savedOr("luckyActive", 0));
   const [luckyNeg, setLuckyNeg] = useState(false);
   const [luckyRevealed, setLuckyRevealed] = useState(() => savedOr("luckyRevealed", 1));
@@ -373,25 +402,37 @@ export default function Numb3r5() {
   const [luckyConfirmClue, setLuckyConfirmClue] = useState(false);
 
   const [flashMsg, setFlashMsg] = useState("");
-  const [showInstructions, setShowInstructions] = useState(() => !_saved); // auto-show for first-timers
+  const [showInstructions, setShowInstructions] = useState(() => !_saved);
+  const [mainResultsOpen, setMainResultsOpen] = useState(() => {
+    const gs = savedOr("gameState", "playing");
+    return gs === "won" || gs === "lost";
+  });
+  const [luckyResultsOpen, setLuckyResultsOpen] = useState(() => {
+    const ls = savedOr("luckyState", "playing");
+    return ls === "won" || ls === "lost";
+  });
 
   // Track how many pairs were visible on mount — suppresses slide-in animation on restored pairs
   const initMainPairs = useRef(savedOr("revealedPairs", 1));
   const initLuckyPairs = useRef(savedOr("luckyRevealed", 1));
+  const flashTimer = useRef(null); // tracks flash timeout to avoid race conditions
 
-  // Persist all meaningful state on every render
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      slots, activeSlot, revealedPairs, attempts, gameState, finalScore,
-      luckyOpen, luckySlots, luckyActive, luckyRevealed, luckyAttempts, luckyState, luckyScore,
-    }));
-  } catch { /* quota/blocked — fail silently */ }
+  // Persist all meaningful state to localStorage whenever it changes
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        slots, activeSlot, revealedPairs, attempts, gameState, finalScore,
+        luckyOpen, luckySlots, luckyActive, luckyRevealed, luckyAttempts, luckyState, luckyScore,
+      }));
+    } catch { /* quota/blocked — fail silently */ }
+  }, [slots, activeSlot, revealedPairs, attempts, gameState, finalScore,
+      luckyOpen, luckySlots, luckyActive, luckyRevealed, luckyAttempts, luckyState, luckyScore]);
 
-  const localDate = new Date().toLocaleDateString("en-US", { month: "numeric", day: "numeric", year: "numeric" });
-
+  // ── Toast flash message (clears previous timer to avoid race conditions) ──
   function flash(msg) {
+    if (flashTimer.current) clearTimeout(flashTimer.current);
     setFlashMsg(msg);
-    setTimeout(() => setFlashMsg(""), 2800);
+    flashTimer.current = setTimeout(() => setFlashMsg(""), 2800);
   }
 
   function copyToClipboard(text) {
@@ -418,8 +459,10 @@ export default function Numb3r5() {
   }
 
   // ── Main game handlers ──
+  // Selecting a slot focuses it for input
   function mainSelectSlot(i) { setActiveSlot(i); setNegative(false); }
 
+  // Pick an operator for the active op slot, auto-advance to next slot
   function mainPickOp(op) {
     const isOpSlot = activeSlot === 0 || activeSlot === 2;
     if (!isOpSlot) return;
@@ -452,6 +495,7 @@ export default function Numb3r5() {
       setFinalScore(score);
       setAttempts(prev => [...prev, { guess: [...slots], result: "correct" }]);
       setGameState("won");
+      setMainResultsOpen(true);
     } else {
       setWrongFlash(true); setTimeout(() => setWrongFlash(false), 650);
       setAttempts(prev => [...prev, { guess: [...slots], result: "wrong" }]);
@@ -463,6 +507,7 @@ export default function Numb3r5() {
       } else {
         if (partial) flash("That's technically right...but it's not the answer we're looking for.");
         setGameState("lost");
+        setMainResultsOpen(true);
       }
     }
   }
@@ -476,36 +521,50 @@ export default function Numb3r5() {
 
   // ── Extra Challenge handlers ──
   function luckySelectSlot(i) {
-    // Don't allow selecting pre-filled hint slots
-    if (luckyRevealed >= 3 && (i === 0 || i === 2 || i === 3)) return;
+    const hintSlots = buildHintSlots(luckyRevealed);
+    if (hintSlots[i] !== null) return; // locked hint slot
     setLuckyActive(i); setLuckyNeg(false);
   }
 
   function luckyPickOp(op) {
     const isOpSlot = luckyActive === 0 || luckyActive === 2 || luckyActive === 4;
     if (!isOpSlot) return;
+    const hintSlots = buildHintSlots(luckyRevealed);
+    if (hintSlots[luckyActive] !== null) return; // locked hint slot
     const next = [...luckySlots]; next[luckyActive] = op;
     setLuckySlots(next); setLuckyNeg(false);
-    setLuckyActive(luckyActive === 0 ? 1 : luckyActive === 2 ? 3 : 5);
+    // Auto-advance to next open slot, skipping hints
+    const naturalNext = luckyActive === 0 ? 1 : luckyActive === 2 ? 3 : 5;
+    const merged = next.map((v, i) => hintSlots[i] !== null ? hintSlots[i] : v);
+    if (hintSlots[naturalNext] !== null) {
+      setLuckyActive(firstOpenSlot(merged));
+    } else {
+      setLuckyActive(naturalNext);
+    }
   }
 
   function luckyPickNum(n) {
     const isNumSlot = luckyActive === 1 || luckyActive === 3 || luckyActive === 5;
     if (!isNumSlot) return;
+    const hintSlots = buildHintSlots(luckyRevealed);
+    if (hintSlots[luckyActive] !== null) return; // locked hint slot
     const val = luckyNeg ? -n : n;
     const next = [...luckySlots]; next[luckyActive] = val;
     setLuckySlots(next); setLuckyNeg(false);
-    // Skip slots 2+3 if they're pre-filled (Clue 3 hint)
-    if (luckyActive === 1) setLuckyActive(next[2] !== null ? 4 : 2);
-    else if (luckyActive === 3) setLuckyActive(4);
-    else setLuckyActive(null);
+    // Auto-advance to next open slot, skipping hints
+    const naturalNext = luckyActive === 1 ? 2 : luckyActive === 3 ? 4 : null;
+    if (naturalNext === null) { setLuckyActive(null); return; }
+    const merged = next.map((v, i) => hintSlots[i] !== null ? hintSlots[i] : v);
+    if (hintSlots[naturalNext] !== null) {
+      setLuckyActive(firstOpenSlot(merged));
+    } else {
+      setLuckyActive(naturalNext);
+    }
   }
 
   function luckyClear() {
-    const base = luckyRevealed >= 3
-      ? [LUCKY_PUZZLE.solution.op1, null, LUCKY_PUZZLE.solution.op2, LUCKY_PUZZLE.solution.num2, null, null]
-      : [null, null, null, null, null, null];
-    setLuckySlots(base); setLuckyActive(luckyRevealed >= 3 ? 1 : 0); setLuckyNeg(false);
+    const base = buildHintSlots(luckyRevealed);
+    setLuckySlots(base); setLuckyActive(firstOpenSlot(base)); setLuckyNeg(false);
   }
 
   function luckySubmit() {
@@ -520,14 +579,13 @@ export default function Numb3r5() {
       setLuckyScore(score);
       setLuckyAttempts(prev => [...prev, { guess: [...luckySlots], result: "correct" }]);
       setLuckyState("won");
+      setLuckyResultsOpen(true);
     } else {
       setLuckyWrongFlash(true); setTimeout(() => setLuckyWrongFlash(false), 650);
       setLuckyAttempts(prev => [...prev, { guess: [...luckySlots], result: "wrong" }]);
       const nextReveal = luckyRevealed + 1;
-      const newSlots = nextReveal >= 3
-        ? [LUCKY_PUZZLE.solution.op1, null, LUCKY_PUZZLE.solution.op2, LUCKY_PUZZLE.solution.num2, null, null]
-        : [null, null, null, null, null, null];
-      setLuckySlots(newSlots); setLuckyActive(nextReveal >= 3 ? 1 : 0);
+      const newSlots = buildHintSlots(nextReveal);
+      setLuckySlots(newSlots); setLuckyActive(firstOpenSlot(newSlots));
       const partial = checkPartialSatisfies3(op1, num1, op2, num2, op3, num3, LUCKY_PUZZLE.pairs.slice(0, luckyRevealed));
       if (luckyRevealed < LUCKY_PUZZLE.pairs.length) {
         setLuckyRevealed(p => p + 1);
@@ -535,6 +593,7 @@ export default function Numb3r5() {
       } else {
         if (partial) flash("That's technically right...but it's not the answer we're looking for.");
         setLuckyState("lost");
+        setLuckyResultsOpen(true);
       }
     }
   }
@@ -543,12 +602,10 @@ export default function Numb3r5() {
   function applyLuckyClue() {
     setLuckyConfirmClue(false);
     const next = luckyRevealed + 1;
-    const newSlots = next >= 3
-      ? [LUCKY_PUZZLE.solution.op1, null, LUCKY_PUZZLE.solution.op2, LUCKY_PUZZLE.solution.num2, null, null]
-      : [null, null, null, null, null, null];
+    const newSlots = buildHintSlots(next);
     setLuckySlots(newSlots);
     setLuckyRevealed(next);
-    setLuckyActive(next >= 3 ? 1 : 0);
+    setLuckyActive(firstOpenSlot(newSlots));
     setLuckyNeg(false);
   }
 
@@ -626,6 +683,16 @@ export default function Numb3r5() {
         .instructions-card {
           animation: slideUp 0.25s ease;
         }
+        .results-overlay {
+          animation: fadeIn 0.15s ease;
+        }
+        .results-card {
+          animation: cardPop 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        @keyframes cardPop {
+          from { opacity: 0; transform: scale(0.95) translateY(12px); }
+          to   { opacity: 1; transform: scale(1) translateY(0); }
+        }
         @keyframes shake {
           0%,100%{ transform: translateX(0); }
           20%{ transform: translateX(-8px); }
@@ -650,16 +717,10 @@ export default function Numb3r5() {
           0%, 100% { color: #4ade80; text-shadow: 0 0 10px #4ade8099; }
           50% { color: #4ade8033; text-shadow: none; }
         }
-        @keyframes pulseGlow {
-          0%, 100% { box-shadow: 0 0 0 0 #4ade8044; }
-          50% { box-shadow: 0 0 12px 4px #4ade8033; }
-        }
 
         .shake { animation: shake 0.45s ease; }
         .wrong-flash { animation: wrongPulse 0.65s ease forwards !important; }
         .pair-row { animation: slideIn 0.35s ease; }
-        .five-blink { animation: blink 1.1s ease-in-out infinite; cursor: pointer; }
-        .cta-pulse { animation: pulseGlow 1.8s ease-in-out infinite; }
 
         .flash-toast {
           position: fixed; top: 20px; left: 50%;
@@ -703,17 +764,18 @@ export default function Numb3r5() {
 
           /* Number grid: full width, bigger keys */
           .num-pad-wrap {
-            order: 1;
+            order: 2;
             flex: none !important;
             width: 100% !important;
           }
           .num-key { height: 64px !important; font-size: 22px !important; }
 
-          /* Negative toggle: stays under num grid, already centered */
+          /* Hide negative toggle on mobile */
+          .negative-toggle-wrap { display: none !important; }
 
-          /* Op pad: single row of 4 */
+          /* Op pad: single row of 4, above numbers */
           .op-pad-wrap {
-            order: 2;
+            order: 1;
             flex-shrink: 0 !important;
             width: 100% !important;
           }
@@ -754,8 +816,10 @@ export default function Numb3r5() {
           <div
             className="instructions-card"
             onClick={e => e.stopPropagation()}
-            style={{ background: "#222", border: "1px solid #3a3a3a", borderRadius: 14, padding: "32px", maxWidth: 480, width: "100%", display: "flex", flexDirection: "column", gap: 20 }}
+            style={{ background: "#222", border: "1px solid #3a3a3a", borderRadius: 14, maxWidth: 480, width: "100%", maxHeight: "90vh", display: "flex", flexDirection: "column" }}
           >
+            {/* Scrollable content */}
+            <div style={{ overflowY: "auto", padding: "32px 32px 24px", display: "flex", flexDirection: "column", gap: 20 }}>
             {/* Title */}
             <div style={{ textAlign: "center" }}>
               <span style={{ fontFamily: "'Aldrich', sans-serif", fontSize: 22, letterSpacing: 4, color: "#e8e8e8" }}>
@@ -821,10 +885,10 @@ export default function Numb3r5() {
 
             </div>
 
-            {/* Divider */}
-            <div style={{ borderTop: "1px solid #333" }} />
+            </div>{/* end scrollable area */}
 
-            {/* Close button */}
+            {/* Sticky close button */}
+            <div style={{ padding: "16px 32px 24px", borderTop: "1px solid #333", background: "#222", borderRadius: "0 0 14px 14px" }}>
             <button
               onClick={() => setShowInstructions(false)}
               style={{
@@ -838,6 +902,7 @@ export default function Numb3r5() {
             >
               LET'S GO
             </button>
+            </div>
           </div>
         </div>
       )}
@@ -903,33 +968,8 @@ export default function Numb3r5() {
             </span>
           )}
           r
-          <span
-            className={gameState === "won" && !luckyOpen ? "five-blink" : ""}
-            onClick={() => { if (gameState === "won" && !luckyOpen) setLuckyOpen(true); }}
-            style={{ color: "#4ade80", cursor: gameState === "won" && !luckyOpen ? "pointer" : "default" }}
-          >
-            5
-          </span>
+          <span style={{ color: "#4ade80" }}>5</span>
         </h1>
-
-        {/* CTA — only after main win, before extra challenge opens */}
-        {gameState === "won" && !luckyOpen && (
-          <div
-            className="cta-pulse"
-            onClick={() => setLuckyOpen(true)}
-            style={{
-              display: "inline-flex", alignItems: "center", gap: 8,
-              marginTop: 12, padding: "7px 18px",
-              background: "#1a2e1a", border: "1px solid #4ade8077",
-              borderRadius: 20, cursor: "pointer", transition: "all 0.2s",
-            }}
-            onMouseEnter={e => { e.currentTarget.style.background = "#223a22"; e.currentTarget.style.borderColor = "#4ade80"; }}
-            onMouseLeave={e => { e.currentTarget.style.background = "#1a2e1a"; e.currentTarget.style.borderColor = "#4ade8077"; }}
-          >
-            <span style={{ color: "#4ade80", fontSize: 12, letterSpacing: 1.5 }}>Up for an extra challenge?</span>
-            <span style={{ color: "#4ade80", fontSize: 16 }}>→</span>
-          </div>
-        )}
 
         <div style={{ display: "flex", justifyContent: "center", gap: 32, marginTop: 10, fontSize: 13, color: "#888" }}>
           {luckyOpen ? (
@@ -974,54 +1014,10 @@ export default function Numb3r5() {
               totalPairs={LUCKY_PUZZLE.pairs.length}
               onRequestClue={luckyRequestClue}
               slotCount={6}
-              hintSlots={luckyRevealed >= 3 ? [0, 2, 3] : []}
+              hintSlots={buildHintSlots(luckyRevealed).map((v, i) => v !== null ? i : null).filter(i => i !== null)}
             />
           )}
 
-          {luckyState === "lost" && (
-            <div style={{ width: "100%", maxWidth: 720, padding: "32px" }}>
-              <div style={{ background: "#221212", border: "1px solid #f87171", borderRadius: 10, padding: "28px", textAlign: "center" }}>
-                <p style={{ color: "#f87171", fontSize: 20, letterSpacing: 5, marginBottom: 8 }}>NOT CRACKED</p>
-                <p style={{ color: "#777", fontSize: 12, marginBottom: 16 }}>The code was:</p>
-                <p style={{ color: "#e8e8e8", fontSize: 22, letterSpacing: 6, marginBottom: 20 }}>
-                  {LUCKY_PUZZLE.solution.op1} {LUCKY_PUZZLE.solution.num1}{" "}
-                  {LUCKY_PUZZLE.solution.op2} {LUCKY_PUZZLE.solution.num2}{" "}
-                  {LUCKY_PUZZLE.solution.op3} {LUCKY_PUZZLE.solution.num3}
-                </p>
-                <button
-                  className="submit-btn"
-                  onClick={() => {
-                    const text = `📡 numb3r5 #${PUZZLE.number} — Extra Challenge NOT CRACKED\n🟥🟥🟥🟥\nGot me today.`;
-                    copyToClipboard(text);
-                  }}
-                  style={{ background: "#2a1212", border: "1px solid #f87171", color: "#f87171", letterSpacing: 3 }}
-                >
-                  📡 Share Result
-                </button>
-              </div>
-            </div>
-          )}
-
-          {luckyState === "won" && (
-            <div style={{ width: "100%", maxWidth: 720, padding: "32px" }}>
-              <div style={{ background: "#121a12", border: "1px solid #4ade80", borderRadius: 10, padding: "28px", textAlign: "center" }}>
-                <p style={{ color: "#4ade80", fontSize: 22, letterSpacing: 6, marginBottom: 8 }}>CODE CRACKED</p>
-                <p style={{ color: "#777", fontSize: 12, marginBottom: 6 }}>Extra challenge solved in {luckyRevealed} clue{luckyRevealed !== 1 ? "s" : ""}!</p>
-                <p style={{ color: "#4ade80", fontSize: 34, letterSpacing: 4, margin: "16px 0" }}>+{luckyScore} pts</p>
-                <button
-                  className="submit-btn"
-                  onClick={() => {
-                    const clueEmoji = ["🟩⬜⬜⬜","🟥🟩⬜⬜","🟥🟥🟩⬜","🟥🟥🟥🟩"][luckyRevealed - 1];
-                    const text = `📡 numb3r5 #${PUZZLE.number} — Extra Challenge CRACKED\n${clueEmoji}\nBonus Score: +${luckyScore}pts`;
-                    copyToClipboard(text);
-                  }}
-                  style={{ background: "#162016", border: "1px solid #4ade80", color: "#4ade80", letterSpacing: 3, marginTop: 8 }}
-                >
-                  📡 Share Result
-                </button>
-              </div>
-            </div>
-          )}
         </>
       ) : (
         <>
@@ -1059,56 +1055,200 @@ export default function Numb3r5() {
             />
           )}
 
-          {gameState === "lost" && (
-            <div style={{ width: "100%", maxWidth: 720, padding: "32px" }}>
-              <div style={{ background: "#221212", border: "1px solid #f87171", borderRadius: 10, padding: "28px", textAlign: "center" }}>
-                <p style={{ color: "#f87171", fontSize: 20, letterSpacing: 5, marginBottom: 8 }}>NOT CRACKED</p>
-                <p style={{ color: "#777", fontSize: 12, marginBottom: 16 }}>The code was:</p>
-                <p style={{ color: "#e8e8e8", fontSize: 28, letterSpacing: 8, marginBottom: 20 }}>
-                  {PUZZLE.solution.op1} {PUZZLE.solution.num1} {PUZZLE.solution.op2} {PUZZLE.solution.num2}
-                </p>
-                <p style={{ color: "#555", fontSize: 12, marginBottom: 20 }}>Come back tomorrow for a new puzzle.</p>
-                <button
-                  className="submit-btn"
-                  onClick={() => {
-                    const text = `📡 numb3r5 #${PUZZLE.number} — NOT CRACKED\n🟥🟥🟥\nGot me today.`;
-                    copyToClipboard(text);
-                  }}
-                  style={{ background: "#2a1212", border: "1px solid #f87171", color: "#f87171", letterSpacing: 3 }}
-                >
-                  📡 Share Result
-                </button>
-              </div>
-            </div>
-          )}
+        </>
+      )}
 
-          {gameState === "won" && (
-            <div style={{ width: "100%", maxWidth: 720, padding: "32px" }}>
-              <div style={{ background: "#121a12", border: "1px solid #4ade80", borderRadius: 10, padding: "28px", textAlign: "center" }}>
-                <p style={{ color: "#4ade80", fontSize: 22, letterSpacing: 6, marginBottom: 8 }}>CODE CRACKED</p>
-                <p style={{ color: "#777", fontSize: 12, marginBottom: 6 }}>Solved using {revealedPairs} clue{revealedPairs !== 1 ? "s" : ""}</p>
-                <p style={{ color: "#4ade80", fontSize: 34, letterSpacing: 4, margin: "16px 0" }}>+{finalScore} pts</p>
-                <p style={{ color: "#666", fontSize: 11, marginBottom: 22 }}>
+      {/* ══════════════════════════════════════
+          MAIN RESULTS OVERLAY
+      ══════════════════════════════════════ */}
+      {mainResultsOpen && (gameState === "won" || gameState === "lost") && (
+        <div
+          className="results-overlay"
+          style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 700, pointerEvents: "none", padding: "24px" }}
+        >
+          <div
+            className="results-card"
+            style={{
+              background: "#1c1c1c",
+              border: `1.5px solid ${gameState === "won" ? "#4ade80" : "#f87171"}`,
+              borderRadius: 16, width: "100%", maxWidth: 480,
+              padding: "32px 32px 36px", display: "flex", flexDirection: "column", gap: 24,
+              maxHeight: "85vh", overflowY: "auto", pointerEvents: "all",
+              boxShadow: `0 8px 48px ${gameState === "won" ? "#4ade8022" : "#f8717122"}, 0 2px 24px #00000088`,
+            }}
+          >
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 11, color: "#666", letterSpacing: 2, textTransform: "uppercase", marginBottom: 8 }}>
+                Puzzle #{PUZZLE.number} · {localDate}
+              </div>
+              <div style={{ fontSize: 26, letterSpacing: 6, color: gameState === "won" ? "#4ade80" : "#f87171" }}>
+                {gameState === "won" ? "CODE CRACKED" : "NOT CRACKED"}
+              </div>
+              {gameState === "won" && (
+                <div style={{ fontSize: 11, color: "#888", marginTop: 6 }}>
                   {revealedPairs === 1 ? "Incredible — solved on the first clue! 🔥"
                     : revealedPairs === 2 ? "Nice work — solved on the second clue."
                     : "Got there in the end — solved on the final clue."}
-                </p>
-                <button
-                  className="submit-btn"
-                  onClick={() => {
-                    const clueEmoji = revealedPairs === 1 ? "🟩⬜⬜" : revealedPairs === 2 ? "🟥🟩⬜" : "🟥🟥🟩";
-                    const text = `📡 numb3r5 #${PUZZLE.number} — CRACKED\n${clueEmoji}\nScore: +${finalScore}pts`;
-                    copyToClipboard(text);
-                  }}
-                  style={{ background: "#162016", border: "1px solid #4ade80", color: "#4ade80", letterSpacing: 3 }}
-                >
-                  📡 Share Result
-                </button>
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "center", gap: 10 }}>
+              {Array.from({ length: PUZZLE.pairs.length }).map((_, i) => {
+                const emoji = gameState === "lost" ? "🟥"
+                  : i < revealedPairs - 1 ? "🟥"
+                  : i === revealedPairs - 1 ? "🟩" : "⬜";
+                return <span key={i} style={{ fontSize: 36 }}>{emoji}</span>;
+              })}
+            </div>
+
+            {gameState === "won" && (
+              <div style={{ textAlign: "center" }}>
+                <div style={{ fontSize: 42, color: "#4ade80", letterSpacing: 4 }}>+{finalScore}</div>
+                <div style={{ fontSize: 11, color: "#666", letterSpacing: 2, marginTop: 4 }}>POINTS</div>
+              </div>
+            )}
+
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 11, color: "#666", letterSpacing: 2, textTransform: "uppercase", marginBottom: 10 }}>
+                {gameState === "won" ? "The formula" : "The code was"}
+              </div>
+              <div style={{ fontSize: 28, letterSpacing: 8, color: "#e8e8e8" }}>
+                {PUZZLE.solution.op1} {PUZZLE.solution.num1} {PUZZLE.solution.op2} {PUZZLE.solution.num2}
               </div>
             </div>
-          )}
-        </>
+
+            <div style={{ borderTop: "1px solid #2a2a2a" }} />
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <button
+                className="submit-btn"
+                onClick={() => {
+                  const clueEmoji = gameState === "lost" ? "🟥🟥🟥"
+                    : revealedPairs === 1 ? "🟩⬜⬜"
+                    : revealedPairs === 2 ? "🟥🟩⬜" : "🟥🟥🟩";
+                  const label = gameState === "won" ? "CRACKED" : "NOT CRACKED";
+                  const scoreLine = gameState === "won" ? `Score: +${finalScore}pts` : "Got me today.";
+                  const text = `📡 numb3r5 #${PUZZLE.number} — ${label}\n${clueEmoji}\n${scoreLine}`;
+                  copyToClipboard(text);
+                }}
+                style={{
+                  background: gameState === "won" ? "#162016" : "#2a1212",
+                  border: `1px solid ${gameState === "won" ? "#4ade80" : "#f87171"}`,
+                  color: gameState === "won" ? "#4ade80" : "#f87171", letterSpacing: 3,
+                }}
+              >📡 Share Result</button>
+
+              {gameState === "won" && luckyState === "playing" && !luckyOpen && (
+                <button className="submit-btn"
+                  onClick={() => { setLuckyOpen(true); setMainResultsOpen(false); }}
+                  style={{ background: "#1a2e1a", border: "1px solid #4ade8077", color: "#4ade80", letterSpacing: 2 }}
+                >Up for an extra challenge? →</button>
+              )}
+
+              {gameState === "won" && luckyState === "playing" && luckyOpen && (
+                <button className="submit-btn"
+                  onClick={() => { setMainResultsOpen(false); }}
+                  style={{ background: "#1a2e1a", border: "1px solid #4ade8077", color: "#4ade80", letterSpacing: 2 }}
+                >Back to Extra Challenge →</button>
+              )}
+
+              {gameState === "won" && (luckyState === "won" || luckyState === "lost") && (
+                <button className="submit-btn"
+                  onClick={() => { setLuckyResultsOpen(true); setMainResultsOpen(false); }}
+                  style={{ background: "#1a1a2e", border: "1px solid #a78bfa77", color: "#a78bfa", letterSpacing: 2 }}
+                >Extra Challenge Results →</button>
+              )}
+            </div>
+          </div>
+        </div>
       )}
+
+      {/* ══════════════════════════════════════
+          EC RESULTS OVERLAY
+      ══════════════════════════════════════ */}
+      {luckyResultsOpen && (luckyState === "won" || luckyState === "lost") && (
+        <div
+          className="results-overlay"
+          style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 700, pointerEvents: "none", padding: "24px" }}
+        >
+          <div
+            className="results-card"
+            style={{
+              background: "#1c1c1c",
+              border: `1.5px solid ${luckyState === "won" ? "#4ade80" : "#f87171"}`,
+              borderRadius: 16, width: "100%", maxWidth: 480,
+              padding: "32px 32px 36px", display: "flex", flexDirection: "column", gap: 24,
+              maxHeight: "85vh", overflowY: "auto", pointerEvents: "all",
+              boxShadow: `0 8px 48px ${luckyState === "won" ? "#4ade8022" : "#f8717122"}, 0 2px 24px #00000088`,
+            }}
+          >
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 11, color: "#666", letterSpacing: 2, textTransform: "uppercase", marginBottom: 8 }}>
+                Extra Challenge · {localDate}
+              </div>
+              <div style={{ fontSize: 26, letterSpacing: 6, color: luckyState === "won" ? "#4ade80" : "#f87171" }}>
+                {luckyState === "won" ? "CODE CRACKED" : "NOT CRACKED"}
+              </div>
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "center", gap: 10 }}>
+              {Array.from({ length: LUCKY_PUZZLE.pairs.length }).map((_, i) => {
+                const emoji = luckyState === "lost" ? "🟥"
+                  : i < luckyRevealed - 1 ? "🟥"
+                  : i === luckyRevealed - 1 ? "🟩" : "⬜";
+                return <span key={i} style={{ fontSize: 36 }}>{emoji}</span>;
+              })}
+            </div>
+
+            {luckyState === "won" && (
+              <div style={{ textAlign: "center" }}>
+                <div style={{ fontSize: 42, color: "#4ade80", letterSpacing: 4 }}>+{luckyScore}</div>
+                <div style={{ fontSize: 11, color: "#666", letterSpacing: 2, marginTop: 4 }}>BONUS POINTS</div>
+              </div>
+            )}
+
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 11, color: "#666", letterSpacing: 2, textTransform: "uppercase", marginBottom: 10 }}>
+                {luckyState === "won" ? "The formula" : "The code was"}
+              </div>
+              <div style={{ fontSize: 22, letterSpacing: 6, color: "#e8e8e8" }}>
+                {LUCKY_PUZZLE.solution.op1} {LUCKY_PUZZLE.solution.num1}{" "}
+                {LUCKY_PUZZLE.solution.op2} {LUCKY_PUZZLE.solution.num2}{" "}
+                {LUCKY_PUZZLE.solution.op3} {LUCKY_PUZZLE.solution.num3}
+              </div>
+            </div>
+
+            <div style={{ borderTop: "1px solid #2a2a2a" }} />
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <button
+                className="submit-btn"
+                onClick={() => {
+                  const clueEmoji = luckyState === "lost" ? "🟥🟥🟥🟥"
+                    : ["🟩⬜⬜⬜","🟥🟩⬜⬜","🟥🟥🟩⬜","🟥🟥🟥🟩"][luckyRevealed - 1];
+                  const text = luckyState === "won"
+                    ? `📡 numb3r5 #${PUZZLE.number} — Extra Challenge CRACKED\n${clueEmoji}\nBonus Score: +${luckyScore}pts`
+                    : `📡 numb3r5 #${PUZZLE.number} — Extra Challenge NOT CRACKED\n🟥🟥🟥🟥\nGot me today.`;
+                  copyToClipboard(text);
+                }}
+                style={{
+                  background: luckyState === "won" ? "#162016" : "#2a1212",
+                  border: `1px solid ${luckyState === "won" ? "#4ade80" : "#f87171"}`,
+                  color: luckyState === "won" ? "#4ade80" : "#f87171", letterSpacing: 3,
+                }}
+              >📡 Share EC Result</button>
+
+              <button className="submit-btn"
+                onClick={() => { setLuckyResultsOpen(false); setMainResultsOpen(true); }}
+                style={{ background: "transparent", border: "1px solid #444", color: "#888", letterSpacing: 2 }}
+              >← Main Results</button>
+
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
