@@ -2,31 +2,31 @@ import { useState, useRef, useEffect } from "react";
 
 // ── Main puzzle (2 ops, 3 pairs) ──
 const PUZZLE = {
-  number: 2,
+  number: 3,
   pairs: [
-    { input: 2, output: 5 },
-    { input: 5, output: 17 },
-    { input: 7, output: 25 },
+    { input: 2, output: 13 },
+    { input: 5, output: 25 },
+    { input: 8, output: 37 },
   ],
-  solution: { op1: "×", num1: 4, op2: "−", num2: 3 },
+  solution: { op1: "×", num1: 4, op2: "+", num2: 5 },
 };
 
 // ── Extra Challenge puzzle (3 ops, 4 pairs) ──
 const LUCKY_PUZZLE = {
   pairs: [
-    { input: 2, output: 9 },
-    { input: 4, output: 13 },
+    { input: 2, output: 5 },
+    { input: 4, output: 11 },
     { input: 6, output: 17 },
-    { input: 8, output: 21 },
+    { input: 8, output: 23 },
   ],
-  solution: { op1: "+", num1: 3, op2: "×", num2: 2, op3: "−", num3: 1 },
+  solution: { op1: "−", num1: 1, op2: "×", num2: 3, op3: "+", num3: 2 },
   // Slot indices: 0=OP1, 1=NUM1, 2=OP2, 3=NUM2, 4=OP3, 5=NUM3
-  // hints[i] = slot revealed when luckyRevealed reaches i+2 (i.e. after clue i+2 is shown)
-  hints: [0, 3, 4], // Clue 2 → OP1, Clue 3 → NUM2, Clue 4 → OP3
+  // hints[i] = slot revealed when luckyRevealed reaches i+2
+  hints: [0, 3, 4], // Clue 2 → OP1(−), Clue 3 → NUM2(3), Clue 4 → OP3(+)
 };
 
 const PAIR_SCORES = { 1: 500, 2: 300, 3: 100 };
-const LUCKY_SCORES = { 1: 1000, 2: 800, 3: 500, 4: 300 };
+const EC_BONUS = 500; // flat bonus for completing EC regardless of clues used
 const OPERATORS = ["+", "−", "×", "÷"];
 
 // Builds a slot array with hints pre-filled up to the current clue level
@@ -38,6 +38,15 @@ function buildHintSlots(revealedCount) {
   LUCKY_PUZZLE.hints.forEach((slotIdx, i) => {
     if (revealedCount >= i + 2) slots[slotIdx] = solArr[slotIdx];
   });
+  return slots;
+}
+
+// Builds a slot array with both hint slots AND formula-revealed slots pre-filled
+function buildLockedSlots(revealedCount, formulaSlots) {
+  const sol = LUCKY_PUZZLE.solution;
+  const solArr = [sol.op1, sol.num1, sol.op2, sol.num2, sol.op3, sol.num3];
+  const slots = buildHintSlots(revealedCount);
+  formulaSlots.forEach(idx => { slots[idx] = solArr[idx]; });
   return slots;
 }
 
@@ -122,6 +131,7 @@ function InputPanel({
   slots, activeSlot, negative, shake,
   onSelectSlot, onPickOperator, onPickNumber, onToggleNegative, onClear, onSubmit,
   revealedPairs, totalPairs, onRequestClue, slotCount, hintSlots,
+  pairCluesLeft, formulaCluesLeft, onFormulaClue,
 }) {
   const opActive = activeSlot === 0 || activeSlot === 2 || (slotCount === 6 && activeSlot === 4);
   const numActive = activeSlot === 1 || activeSlot === 3 || (slotCount === 6 && activeSlot === 5);
@@ -244,43 +254,97 @@ function InputPanel({
           </button>
         </div>
 
-        {/* Clues panel */}
-        <div className="clues-panel-wrap" style={{ flexShrink: 0, width: 152, display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
-          {slotCount !== 6 && <div className="clues-label" style={{ fontSize: 11, color: "#888", letterSpacing: 1.5, textTransform: "uppercase" }}>Clues</div>}
-          <div className="clues-inner" style={{
-            background: "#242424", border: "1px solid #3a3a3a",
-            borderRadius: 10, padding: "10px", width: "100%",
-            display: "flex", flexDirection: "column", gap: 7,
-          }}>
-            {Array.from({ length: totalPairs }).map((_, i) => {
-              const used = i < revealedPairs;
-              const isCurrent = i === revealedPairs - 1;
-              const isNext = i === revealedPairs;
-              return (
-                <div
-                  key={i}
-                  onClick={() => { if (isNext) onRequestClue(); }}
-                  style={{
-                    width: "100%", height: 34, borderRadius: 6,
-                    background: isCurrent ? "#2a3a2a" : used ? "#2e2e2e" : isNext ? "#2a2a2a" : "#222",
-                    border: `1px solid ${isCurrent ? "#4ade8077" : used ? "#3a3a3a" : isNext ? "#4a4a4a" : "#2e2e2e"}`,
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    fontSize: 11,
-                    color: isCurrent ? "#4ade80" : used ? "#666" : isNext ? "#aaa" : "#444",
-                    letterSpacing: 1, cursor: isNext ? "pointer" : "default", transition: "all 0.15s",
-                  }}
-                  onMouseEnter={e => { if (isNext) { e.currentTarget.style.background = "#363636"; e.currentTarget.style.color = "#ddd"; e.currentTarget.style.borderColor = "#4ade8055"; }}}
-                  onMouseLeave={e => { if (isNext) { e.currentTarget.style.background = "#2a2a2a"; e.currentTarget.style.color = "#aaa"; e.currentTarget.style.borderColor = "#4a4a4a"; }}}
-                >
-                  {isCurrent ? `Clue ${i + 1}` : used ? `✓ Clue ${i + 1}` : isNext ? `+ Clue ${i + 1}` : `Clue ${i + 1}`}
-                </div>
-              );
-            })}
+        {/* Clues panel — EC gets two-button version, main game gets standard */}
+        {slotCount === 6 ? (
+          <div className="clues-panel-wrap" style={{ flexShrink: 0, width: 152, display: "flex", flexDirection: "column", gap: 8 }}>
+            <div style={{ fontSize: 11, color: "#888", letterSpacing: 1.5, textTransform: "uppercase", textAlign: "center" }}>Clues</div>
+            {/* Reveal Pair Clue */}
+            <button
+              onClick={() => pairCluesLeft > 0 && onRequestClue()}
+              disabled={pairCluesLeft === 0}
+              style={{
+                width: "100%", height: 44, borderRadius: 8, cursor: pairCluesLeft > 0 ? "pointer" : "not-allowed",
+                background: pairCluesLeft > 0 ? "#2a2a2a" : "#1e1e1e",
+                border: `1px solid ${pairCluesLeft > 0 ? "#4a4a4a" : "#2a2a2a"}`,
+                color: pairCluesLeft > 0 ? "#aaa" : "#444",
+                fontSize: 10, fontFamily: "'Aldrich', sans-serif", letterSpacing: 1,
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                padding: "0 10px", transition: "all 0.15s",
+              }}
+              onMouseEnter={e => { if (pairCluesLeft > 0) { e.currentTarget.style.background = "#363636"; e.currentTarget.style.color = "#ddd"; }}}
+              onMouseLeave={e => { if (pairCluesLeft > 0) { e.currentTarget.style.background = "#2a2a2a"; e.currentTarget.style.color = "#aaa"; }}}
+            >
+              <span>Reveal Pair</span>
+              <span style={{
+                background: pairCluesLeft > 0 ? "#3a3a3a" : "#222",
+                border: `1px solid ${pairCluesLeft > 0 ? "#555" : "#333"}`,
+                borderRadius: 4, padding: "1px 6px", fontSize: 11,
+                color: pairCluesLeft > 0 ? "#aaa" : "#444",
+              }}>{pairCluesLeft}</span>
+            </button>
+            {/* Reveal Formula Clue */}
+            <button
+              onClick={() => formulaCluesLeft > 0 && onFormulaClue()}
+              disabled={formulaCluesLeft === 0}
+              style={{
+                width: "100%", height: 44, borderRadius: 8, cursor: formulaCluesLeft > 0 ? "pointer" : "not-allowed",
+                background: formulaCluesLeft > 0 ? "#2a2a2a" : "#1e1e1e",
+                border: `1px solid ${formulaCluesLeft > 0 ? "#4a4a4a" : "#2a2a2a"}`,
+                color: formulaCluesLeft > 0 ? "#aaa" : "#444",
+                fontSize: 10, fontFamily: "'Aldrich', sans-serif", letterSpacing: 1,
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                padding: "0 10px", transition: "all 0.15s",
+              }}
+              onMouseEnter={e => { if (formulaCluesLeft > 0) { e.currentTarget.style.background = "#363636"; e.currentTarget.style.color = "#ddd"; }}}
+              onMouseLeave={e => { if (formulaCluesLeft > 0) { e.currentTarget.style.background = "#2a2a2a"; e.currentTarget.style.color = "#aaa"; }}}
+            >
+              <span>Reveal Formula</span>
+              <span style={{
+                background: formulaCluesLeft > 0 ? "#3a3a3a" : "#222",
+                border: `1px solid ${formulaCluesLeft > 0 ? "#555" : "#333"}`,
+                borderRadius: 4, padding: "1px 6px", fontSize: 11,
+                color: formulaCluesLeft > 0 ? "#aaa" : "#444",
+              }}>{formulaCluesLeft}</span>
+            </button>
           </div>
-          <div className="clues-remaining" style={{ fontSize: 11, textAlign: "center", letterSpacing: 0.5, color: revealedPairs === totalPairs ? "#f87171" : "#666" }}>
-            {revealedPairs === totalPairs ? "Last chance!" : `${totalPairs - revealedPairs} clue${totalPairs - revealedPairs !== 1 ? "s" : ""} remaining`}
+        ) : (
+          <div className="clues-panel-wrap" style={{ flexShrink: 0, width: 152, display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+            <div className="clues-label" style={{ fontSize: 11, color: "#888", letterSpacing: 1.5, textTransform: "uppercase" }}>Clues</div>
+            <div className="clues-inner" style={{
+              background: "#242424", border: "1px solid #3a3a3a",
+              borderRadius: 10, padding: "10px", width: "100%",
+              display: "flex", flexDirection: "column", gap: 7,
+            }}>
+              {Array.from({ length: totalPairs }).map((_, i) => {
+                const used = i < revealedPairs;
+                const isCurrent = i === revealedPairs - 1;
+                const isNext = i === revealedPairs;
+                return (
+                  <div
+                    key={i}
+                    onClick={() => { if (isNext) onRequestClue(); }}
+                    style={{
+                      width: "100%", height: 34, borderRadius: 6,
+                      background: isCurrent ? "#2a3a2a" : used ? "#2e2e2e" : isNext ? "#2a2a2a" : "#222",
+                      border: `1px solid ${isCurrent ? "#4ade8077" : used ? "#3a3a3a" : isNext ? "#4a4a4a" : "#2e2e2e"}`,
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      fontSize: 11,
+                      color: isCurrent ? "#4ade80" : used ? "#666" : isNext ? "#aaa" : "#444",
+                      letterSpacing: 1, cursor: isNext ? "pointer" : "default", transition: "all 0.15s",
+                    }}
+                    onMouseEnter={e => { if (isNext) { e.currentTarget.style.background = "#363636"; e.currentTarget.style.color = "#ddd"; e.currentTarget.style.borderColor = "#4ade8055"; }}}
+                    onMouseLeave={e => { if (isNext) { e.currentTarget.style.background = "#2a2a2a"; e.currentTarget.style.color = "#aaa"; e.currentTarget.style.borderColor = "#4a4a4a"; }}}
+                  >
+                    {isCurrent ? `Clue ${i + 1}` : used ? `✓ Clue ${i + 1}` : isNext ? `+ Clue ${i + 1}` : `Clue ${i + 1}`}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="clues-remaining" style={{ fontSize: 11, textAlign: "center", letterSpacing: 0.5, color: revealedPairs === totalPairs ? "#f87171" : "#666" }}>
+              {revealedPairs === totalPairs ? "Last chance!" : `${totalPairs - revealedPairs} clue${totalPairs - revealedPairs !== 1 ? "s" : ""} remaining`}
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       <button className="submit-btn" onClick={onSubmit} disabled={!allFilled}>
@@ -360,7 +424,7 @@ function PuzzleZone({ visiblePairs, currentSlots, currentActive, wrongFlash, pai
   );
 }
 
-const STORAGE_KEY = `numb3r5_v18_puzzle${PUZZLE.number}`;
+const STORAGE_KEY = `numb3r5_v25_puzzle${PUZZLE.number}`;
 const _saved = (() => {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -390,7 +454,8 @@ export default function Numb3r5() {
 
   // Extra Challenge state
   const [luckyOpen, setLuckyOpen] = useState(() => savedOr("luckyOpen", false));
-  const [luckySlots, setLuckySlots] = useState(() => savedOr("luckySlots", buildHintSlots(savedOr("luckyRevealed", 1))));
+  const [luckyFormulaSlots, setLuckyFormulaSlots] = useState(() => savedOr("luckyFormulaSlots", []));
+  const [luckySlots, setLuckySlots] = useState(() => savedOr("luckySlots", buildLockedSlots(savedOr("luckyRevealed", 1), savedOr("luckyFormulaSlots", []))));
   const [luckyActive, setLuckyActive] = useState(() => savedOr("luckyActive", 0));
   const [luckyNeg, setLuckyNeg] = useState(false);
   const [luckyRevealed, setLuckyRevealed] = useState(() => savedOr("luckyRevealed", 1));
@@ -402,7 +467,9 @@ export default function Numb3r5() {
   const [luckyConfirmClue, setLuckyConfirmClue] = useState(false);
 
   const [flashMsg, setFlashMsg] = useState("");
-  const [showInstructions, setShowInstructions] = useState(() => !_saved);
+  const [showInstructions, setShowInstructions] = useState(false);
+  const [showDemo, setShowDemo] = useState(() => !_saved); // auto-show for first-time players
+  const [demoStep, setDemoStep] = useState(0);
   const [mainResultsOpen, setMainResultsOpen] = useState(() => {
     const gs = savedOr("gameState", "playing");
     return gs === "won" || gs === "lost";
@@ -422,17 +489,17 @@ export default function Numb3r5() {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({
         slots, activeSlot, revealedPairs, attempts, gameState, finalScore,
-        luckyOpen, luckySlots, luckyActive, luckyRevealed, luckyAttempts, luckyState, luckyScore,
+        luckyOpen, luckyFormulaSlots, luckySlots, luckyActive, luckyRevealed, luckyAttempts, luckyState, luckyScore,
       }));
     } catch { /* quota/blocked — fail silently */ }
   }, [slots, activeSlot, revealedPairs, attempts, gameState, finalScore,
-      luckyOpen, luckySlots, luckyActive, luckyRevealed, luckyAttempts, luckyState, luckyScore]);
+      luckyOpen, luckyFormulaSlots, luckySlots, luckyActive, luckyRevealed, luckyAttempts, luckyState, luckyScore]);
 
   // ── Toast flash message (clears previous timer to avoid race conditions) ──
   function flash(msg) {
     if (flashTimer.current) clearTimeout(flashTimer.current);
     setFlashMsg(msg);
-    flashTimer.current = setTimeout(() => setFlashMsg(""), 2800);
+    flashTimer.current = setTimeout(() => setFlashMsg(""), 4500);
   }
 
   function copyToClipboard(text) {
@@ -521,22 +588,21 @@ export default function Numb3r5() {
 
   // ── Extra Challenge handlers ──
   function luckySelectSlot(i) {
-    const hintSlots = buildHintSlots(luckyRevealed);
-    if (hintSlots[i] !== null) return; // locked hint slot
+    const locked = buildLockedSlots(luckyRevealed, luckyFormulaSlots);
+    if (locked[i] !== null) return; // locked hint or formula slot
     setLuckyActive(i); setLuckyNeg(false);
   }
 
   function luckyPickOp(op) {
     const isOpSlot = luckyActive === 0 || luckyActive === 2 || luckyActive === 4;
     if (!isOpSlot) return;
-    const hintSlots = buildHintSlots(luckyRevealed);
-    if (hintSlots[luckyActive] !== null) return; // locked hint slot
+    const locked = buildLockedSlots(luckyRevealed, luckyFormulaSlots);
+    if (locked[luckyActive] !== null) return;
     const next = [...luckySlots]; next[luckyActive] = op;
     setLuckySlots(next); setLuckyNeg(false);
-    // Auto-advance to next open slot, skipping hints
     const naturalNext = luckyActive === 0 ? 1 : luckyActive === 2 ? 3 : 5;
-    const merged = next.map((v, i) => hintSlots[i] !== null ? hintSlots[i] : v);
-    if (hintSlots[naturalNext] !== null) {
+    const merged = next.map((v, i) => locked[i] !== null ? locked[i] : v);
+    if (locked[naturalNext] !== null) {
       setLuckyActive(firstOpenSlot(merged));
     } else {
       setLuckyActive(naturalNext);
@@ -546,16 +612,15 @@ export default function Numb3r5() {
   function luckyPickNum(n) {
     const isNumSlot = luckyActive === 1 || luckyActive === 3 || luckyActive === 5;
     if (!isNumSlot) return;
-    const hintSlots = buildHintSlots(luckyRevealed);
-    if (hintSlots[luckyActive] !== null) return; // locked hint slot
+    const locked = buildLockedSlots(luckyRevealed, luckyFormulaSlots);
+    if (locked[luckyActive] !== null) return;
     const val = luckyNeg ? -n : n;
     const next = [...luckySlots]; next[luckyActive] = val;
     setLuckySlots(next); setLuckyNeg(false);
-    // Auto-advance to next open slot, skipping hints
     const naturalNext = luckyActive === 1 ? 2 : luckyActive === 3 ? 4 : null;
     if (naturalNext === null) { setLuckyActive(null); return; }
-    const merged = next.map((v, i) => hintSlots[i] !== null ? hintSlots[i] : v);
-    if (hintSlots[naturalNext] !== null) {
+    const merged = next.map((v, i) => locked[i] !== null ? locked[i] : v);
+    if (locked[naturalNext] !== null) {
       setLuckyActive(firstOpenSlot(merged));
     } else {
       setLuckyActive(naturalNext);
@@ -563,7 +628,7 @@ export default function Numb3r5() {
   }
 
   function luckyClear() {
-    const base = buildHintSlots(luckyRevealed);
+    const base = buildLockedSlots(luckyRevealed, luckyFormulaSlots);
     setLuckySlots(base); setLuckyActive(firstOpenSlot(base)); setLuckyNeg(false);
   }
 
@@ -575,8 +640,7 @@ export default function Numb3r5() {
       flash(reason); return;
     }
     if (checkLuckySatisfies(op1, num1, op2, num2, op3, num3)) {
-      const score = LUCKY_SCORES[luckyRevealed] ?? 100;
-      setLuckyScore(score);
+      setLuckyScore(EC_BONUS);
       setLuckyAttempts(prev => [...prev, { guess: [...luckySlots], result: "correct" }]);
       setLuckyState("won");
       setLuckyResultsOpen(true);
@@ -584,7 +648,7 @@ export default function Numb3r5() {
       setLuckyWrongFlash(true); setTimeout(() => setLuckyWrongFlash(false), 650);
       setLuckyAttempts(prev => [...prev, { guess: [...luckySlots], result: "wrong" }]);
       const nextReveal = luckyRevealed + 1;
-      const newSlots = buildHintSlots(nextReveal);
+      const newSlots = buildLockedSlots(nextReveal, luckyFormulaSlots);
       setLuckySlots(newSlots); setLuckyActive(firstOpenSlot(newSlots));
       const partial = checkPartialSatisfies3(op1, num1, op2, num2, op3, num3, LUCKY_PUZZLE.pairs.slice(0, luckyRevealed));
       if (luckyRevealed < LUCKY_PUZZLE.pairs.length) {
@@ -602,12 +666,39 @@ export default function Numb3r5() {
   function applyLuckyClue() {
     setLuckyConfirmClue(false);
     const next = luckyRevealed + 1;
-    const newSlots = buildHintSlots(next);
+    const newSlots = buildLockedSlots(next, luckyFormulaSlots);
     setLuckySlots(newSlots);
     setLuckyRevealed(next);
     setLuckyActive(firstOpenSlot(newSlots));
     setLuckyNeg(false);
   }
+
+  // Reveals a random unfilled, non-locked slot from the solution
+  function applyFormulaClue() {
+    const sol = LUCKY_PUZZLE.solution;
+    const solArr = [sol.op1, sol.num1, sol.op2, sol.num2, sol.op3, sol.num3];
+    const locked = buildLockedSlots(luckyRevealed, luckyFormulaSlots);
+    // Find slots that are: not locked, not already filled by player
+    const candidates = locked
+      .map((v, i) => v === null && luckySlots[i] === null ? i : null)
+      .filter(i => i !== null);
+    if (candidates.length <= 2) return; // safety check
+    const pick = candidates[Math.floor(Math.random() * candidates.length)];
+    const newFormulaSlots = [...luckyFormulaSlots, pick];
+    const newSlots = buildLockedSlots(luckyRevealed, newFormulaSlots);
+    // Preserve any player-filled slots
+    luckySlots.forEach((v, i) => { if (newSlots[i] === null && v !== null) newSlots[i] = v; });
+    setLuckyFormulaSlots(newFormulaSlots);
+    setLuckySlots(newSlots);
+    if (luckyActive === pick) setLuckyActive(firstOpenSlot(newSlots));
+  }
+
+  // How many formula clues are still available (always keep 2 slots for player to fill)
+  const lockedCount = buildLockedSlots(luckyRevealed, luckyFormulaSlots).filter(v => v !== null).length;
+  const playerFilledCount = luckySlots.filter((v, i) => buildLockedSlots(luckyRevealed, luckyFormulaSlots)[i] === null && v !== null).length;
+  const openSlots = 6 - lockedCount - playerFilledCount;
+  const formulaCluesLeft = Math.max(0, openSlots - 2);
+  const pairCluesLeft = LUCKY_PUZZLE.pairs.length - luckyRevealed;
 
   const mainVisiblePairs = PUZZLE.pairs.slice(0, revealedPairs);
   const luckyVisiblePairs = LUCKY_PUZZLE.pairs.slice(0, luckyRevealed);
@@ -723,12 +814,14 @@ export default function Numb3r5() {
         .pair-row { animation: slideIn 0.35s ease; }
 
         .flash-toast {
-          position: fixed; top: 20px; left: 50%;
+          position: fixed; top: 72px; left: 50%;
           transform: translateX(-50%);
           background: #2a2a2a; border: 1px solid #4ade80; color: #4ade80;
           padding: 10px 26px; border-radius: 8px; font-size: 13px;
           font-family: 'Aldrich', sans-serif; z-index: 999;
           white-space: nowrap; pointer-events: none;
+          max-width: calc(100vw - 32px);
+          white-space: normal; text-align: center;
           animation: fadeDown 0.25s ease;
         }
 
@@ -887,8 +980,21 @@ export default function Numb3r5() {
 
             </div>{/* end scrollable area */}
 
-            {/* Sticky close button */}
-            <div style={{ padding: "16px 32px 24px", borderTop: "1px solid #333", background: "#222", borderRadius: "0 0 14px 14px" }}>
+            {/* Sticky close buttons */}
+            <div style={{ padding: "16px 32px 24px", borderTop: "1px solid #333", background: "#222", borderRadius: "0 0 14px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
+            <button
+              onClick={() => { setShowInstructions(false); setDemoStep(0); setShowDemo(true); }}
+              style={{
+                width: "100%", height: 44, borderRadius: 8,
+                background: "transparent", border: "1px solid #555",
+                color: "#888", fontSize: 12, fontFamily: "'Aldrich', sans-serif",
+                letterSpacing: 2, cursor: "pointer", transition: "all 0.15s",
+              }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = "#4ade80"; e.currentTarget.style.color = "#4ade80"; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = "#555"; e.currentTarget.style.color = "#888"; }}
+            >
+              GUIDED WALKTHROUGH →
+            </button>
             <button
               onClick={() => setShowInstructions(false)}
               style={{
@@ -906,6 +1012,214 @@ export default function Numb3r5() {
           </div>
         </div>
       )}
+
+      {/* ── Interactive Demo Walkthrough ── */}
+      {showDemo && (() => {
+        // Demo uses a fake simple puzzle: + 2 × 3, pair: 1 → 9
+        const DEMO_SLOTS = ["+", 2, "×", 3];
+        const DEMO_STEPS = [
+          {
+            title: "Welcome to numb3r5",
+            body: "Let's walk you through how the game works. It'll only take a minute.",
+            highlight: null,
+            showSlots: false,
+            showPair: false,
+          },
+          {
+            title: "You have a clue",
+            body: "Each round starts with one input/output pair. A hidden formula turns every input into its output.",
+            highlight: null,
+            showSlots: false,
+            showPair: true,
+          },
+          {
+            title: "Crack the formula",
+            body: "The formula always has the shape: OP NUM OP NUM — two operations, two numbers, evaluated strictly left to right.",
+            highlight: null,
+            showSlots: true,
+            showPair: true,
+          },
+          {
+            title: "⚠ Forget PEMDAS",
+            body: "Math goes left to right — no exceptions. So 1 + 2 × 3 = 9, not 7. Keep that in mind.",
+            highlight: null,
+            showSlots: true,
+            showPair: true,
+          },
+          {
+            title: "Fill in OP 1",
+            body: "The first slot takes an operator. For our example, the answer starts with +",
+            highlight: 0,
+            showSlots: true,
+            showPair: true,
+            filledUpTo: 0,
+          },
+          {
+            title: "Fill in NUM 1",
+            body: "The second slot takes a number. Here it's 2.",
+            highlight: 1,
+            showSlots: true,
+            showPair: true,
+            filledUpTo: 1,
+          },
+          {
+            title: "Fill in OP 2",
+            body: "Third slot — another operator. In this case ×.",
+            highlight: 2,
+            showSlots: true,
+            showPair: true,
+            filledUpTo: 2,
+          },
+          {
+            title: "Fill in NUM 2",
+            body: "Last slot — the final number. Here it's 3. Check the math: 1 + 2 = 3, then 3 × 3 = 9 ✓",
+            highlight: 3,
+            showSlots: true,
+            showPair: true,
+            filledUpTo: 3,
+          },
+          {
+            title: "One correct answer",
+            body: "Only one formula cracks the code. Other formulas might fit the first pair — but only the right one works for all of them.",
+            highlight: null,
+            showSlots: true,
+            showPair: true,
+            filledUpTo: 3,
+          },
+          {
+            title: "Clues & hints",
+            body: "A wrong guess automatically reveals the next pair. You can also tap a clue slot to request one — but it costs points. Fewer clues = higher score.",
+            highlight: null,
+            showSlots: true,
+            showPair: true,
+            filledUpTo: 3,
+          },
+        ];
+
+        const step = DEMO_STEPS[demoStep];
+        const isLast = demoStep === DEMO_STEPS.length - 1;
+        const slotTypes = ["op", "num", "op", "num"];
+        const slotLabels = ["OP", "NUM", "OP", "NUM"];
+
+        function closeDemo() { setShowDemo(false); setDemoStep(0); }
+
+        return (
+          <div
+            className="instructions-overlay"
+            style={{ position: "fixed", inset: 0, background: "#000000cc", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 650, padding: "24px" }}
+          >
+            <div
+              className="instructions-card"
+              style={{ background: "#222", border: "1px solid #3a3a3a", borderRadius: 14, maxWidth: 420, width: "100%", display: "flex", flexDirection: "column", overflow: "hidden" }}
+            >
+              {/* Progress bar */}
+              <div style={{ height: 3, background: "#2a2a2a", borderRadius: "14px 14px 0 0", overflow: "hidden" }}>
+                <div style={{ height: "100%", background: "#4ade80", width: `${((demoStep + 1) / DEMO_STEPS.length) * 100}%`, transition: "width 0.3s ease" }} />
+              </div>
+
+              <div style={{ padding: "28px 28px 24px", display: "flex", flexDirection: "column", gap: 20 }}>
+                {/* Step counter */}
+                <div style={{ fontSize: 10, color: "#555", letterSpacing: 2, textTransform: "uppercase" }}>
+                  Step {demoStep + 1} of {DEMO_STEPS.length}
+                </div>
+
+                {/* Title */}
+                <div style={{ fontFamily: "'Aldrich', sans-serif", fontSize: 18, color: "#e8e8e8", letterSpacing: 1 }}>
+                  {step.title}
+                </div>
+
+                {/* Body */}
+                <p style={{ fontSize: 13, color: "#bbb", lineHeight: 1.8 }}>{step.body}</p>
+
+                {/* Demo pair */}
+                {step.showPair && (
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "14px", background: "#2a2a2a", borderRadius: 10, flexWrap: "wrap" }}>
+                    <span style={{ color: "#e8e8e8", fontSize: 24 }}>1</span>
+                    {["OP","NUM","OP","NUM"].map((label, i) => {
+                      const filled = step.filledUpTo !== undefined && i <= step.filledUpTo;
+                      const isOp = i % 2 === 0;
+                      return (
+                        <div key={i} style={{
+                          width: 36, height: 36, borderRadius: 6,
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                          border: `1.5px solid ${filled ? "#666" : "#444"}`,
+                          background: filled ? "#4a4a4a" : "#3a3a3a",
+                          color: filled ? (isOp ? "#e8e8e8" : "#4ade80") : "#555",
+                          fontSize: filled ? 15 : 10, fontFamily: "'Aldrich', sans-serif",
+                        }}>
+                          {filled ? DEMO_SLOTS[i] : label}
+                        </div>
+                      );
+                    })}
+                    <span style={{ color: "#ccc", fontSize: 18 }}>=</span>
+                    <span style={{ color: "#4ade80", fontSize: 24 }}>9</span>
+                  </div>
+                )}
+
+                {/* Demo slots — only shown on steps before the pair is visible */}
+                {step.showSlots && !step.showPair && (
+                  <div style={{ display: "flex", gap: 8 }}>
+                    {DEMO_SLOTS.map((val, i) => {
+                      const filled = step.filledUpTo !== undefined && i <= step.filledUpTo;
+                      const isHighlighted = step.highlight === i;
+                      const isOp = slotTypes[i] === "op";
+                      return (
+                        <div key={i} style={{
+                          flex: 1, height: 52, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center",
+                          fontFamily: "'Aldrich', sans-serif", fontSize: 17,
+                          background: filled ? (isHighlighted ? "#1e3a1e" : "#3d3d3d") : isHighlighted ? "#1e2e1e" : "#2e2e2e",
+                          border: `2px solid ${isHighlighted ? "#4ade80" : filled ? "#585858" : "#3a3a3a"}`,
+                          color: filled ? (isOp ? "#e8e8e8" : "#4ade80") : "#555",
+                          transition: "all 0.25s",
+                          boxShadow: isHighlighted ? "0 0 0 2px #4ade8033" : "none",
+                        }}>
+                          {filled ? val : slotLabels[i]}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Buttons */}
+                <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+                  <button
+                    onClick={closeDemo}
+                    style={{
+                      flex: 1, height: 44, borderRadius: 8, background: "transparent",
+                      border: "1px solid #333", color: "#555", fontSize: 12,
+                      fontFamily: "'Aldrich', sans-serif", letterSpacing: 2, cursor: "pointer",
+                    }}
+                  >SKIP</button>
+                  {demoStep > 0 && (
+                    <button
+                      onClick={() => setDemoStep(s => s - 1)}
+                      style={{
+                        flex: 1, height: 44, borderRadius: 8,
+                        background: "transparent", border: "1px solid #444",
+                        color: "#888", fontSize: 13,
+                        fontFamily: "'Aldrich', sans-serif", letterSpacing: 2, cursor: "pointer",
+                      }}
+                      onMouseEnter={e => e.currentTarget.style.borderColor = "#666"}
+                      onMouseLeave={e => e.currentTarget.style.borderColor = "#444"}
+                    >← BACK</button>
+                  )}
+                  <button
+                    onClick={() => isLast ? closeDemo() : setDemoStep(s => s + 1)}
+                    style={{
+                      flex: 2, height: 44, borderRadius: 8,
+                      background: "#2a3a2a", border: "1px solid #4ade80",
+                      color: "#4ade80", fontSize: 13,
+                      fontFamily: "'Aldrich', sans-serif", letterSpacing: 3, cursor: "pointer",
+                    }}
+                    onMouseEnter={e => e.currentTarget.style.background = "#334a33"}
+                    onMouseLeave={e => e.currentTarget.style.background = "#2a3a2a"}
+                  >{isLast ? "LET'S PLAY" : "NEXT →"}</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── Confirm clue modal (main) ── */}
       {confirmClue && (
@@ -1014,7 +1328,10 @@ export default function Numb3r5() {
               totalPairs={LUCKY_PUZZLE.pairs.length}
               onRequestClue={luckyRequestClue}
               slotCount={6}
-              hintSlots={buildHintSlots(luckyRevealed).map((v, i) => v !== null ? i : null).filter(i => i !== null)}
+              hintSlots={buildLockedSlots(luckyRevealed, luckyFormulaSlots).map((v, i) => v !== null ? i : null).filter(i => i !== null)}
+              pairCluesLeft={pairCluesLeft}
+              formulaCluesLeft={formulaCluesLeft}
+              onFormulaClue={applyFormulaClue}
             />
           )}
 
@@ -1108,6 +1425,17 @@ export default function Numb3r5() {
                 <div style={{ fontSize: 11, color: "#666", letterSpacing: 2, marginTop: 4 }}>POINTS</div>
               </div>
             )}
+
+            <div style={{ display: "flex", justifyContent: "center", gap: 24 }}>
+              <div style={{ textAlign: "center" }}>
+                <div style={{ fontSize: 20, color: "#e8e8e8" }}>{revealedPairs - 1}</div>
+                <div style={{ fontSize: 10, color: "#555", letterSpacing: 1.5, textTransform: "uppercase", marginTop: 3 }}>Hints Used</div>
+              </div>
+              <div style={{ textAlign: "center" }}>
+                <div style={{ fontSize: 20, color: "#e8e8e8" }}>{attempts.filter(a => a.result === "wrong").length}</div>
+                <div style={{ fontSize: 10, color: "#555", letterSpacing: 1.5, textTransform: "uppercase", marginTop: 3 }}>Wrong Guesses</div>
+              </div>
+            </div>
 
             <div style={{ textAlign: "center" }}>
               <div style={{ fontSize: 11, color: "#666", letterSpacing: 2, textTransform: "uppercase", marginBottom: 10 }}>
@@ -1207,6 +1535,21 @@ export default function Numb3r5() {
                 <div style={{ fontSize: 11, color: "#666", letterSpacing: 2, marginTop: 4 }}>BONUS POINTS</div>
               </div>
             )}
+
+            <div style={{ display: "flex", justifyContent: "center", gap: 24 }}>
+              <div style={{ textAlign: "center" }}>
+                <div style={{ fontSize: 20, color: "#e8e8e8" }}>{luckyRevealed - 1}</div>
+                <div style={{ fontSize: 10, color: "#555", letterSpacing: 1.5, textTransform: "uppercase", marginTop: 3 }}>Pair Hints</div>
+              </div>
+              <div style={{ textAlign: "center" }}>
+                <div style={{ fontSize: 20, color: "#e8e8e8" }}>{luckyFormulaSlots.length}</div>
+                <div style={{ fontSize: 10, color: "#555", letterSpacing: 1.5, textTransform: "uppercase", marginTop: 3 }}>Formula Hints</div>
+              </div>
+              <div style={{ textAlign: "center" }}>
+                <div style={{ fontSize: 20, color: "#e8e8e8" }}>{luckyAttempts.filter(a => a.result === "wrong").length}</div>
+                <div style={{ fontSize: 10, color: "#555", letterSpacing: 1.5, textTransform: "uppercase", marginTop: 3 }}>Wrong Guesses</div>
+              </div>
+            </div>
 
             <div style={{ textAlign: "center" }}>
               <div style={{ fontSize: 11, color: "#666", letterSpacing: 2, textTransform: "uppercase", marginBottom: 10 }}>
